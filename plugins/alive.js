@@ -57,7 +57,7 @@ ezra({
                     contextInfo: {
                         isForwarded: true,
                         forwardedNewsletterMessageInfo: {
-                            newsletterJid: "120363421014261315@newsletter",
+                            newsletterJid: "120363424512102809@newsletter",
                             newsletterName: "VIPER XMD",
                             serverMessageId: 0x8f
                         },
@@ -79,7 +79,7 @@ ezra({
                 contextInfo: {
                     isForwarded: true,
                     forwardedNewsletterMessageInfo: {
-                        newsletterJid: "120363421014261315@newsletter",
+                        newsletterJid: "120363424512102809@newsletter",
                         newsletterName: "VIPER XMD",
                         serverMessageId: 0x8f
                     },
@@ -99,7 +99,7 @@ ezra({
                 contextInfo: {
                     isForwarded: true,
                     forwardedNewsletterMessageInfo: {
-                        newsletterJid: "120363421014261315@newsletter",
+                        newsletterJid: "120363424512102809@newsletter",
                         newsletterName: "VIPER XMD",
                         serverMessageId: 0x8f
                     },

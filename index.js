@@ -132,16 +132,22 @@ process.on('unhandledRejection', (reason, p) => {
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception thrown:', err);
 });
-const store = (0, baileys_1.makeInMemoryStore)({
-    logger: pino().child({ level: "silent", stream: "store" }),
-});
-
-// Initialize status reaction listener once (outside main to avoid stacking on reconnects)
-let statusReactionInitialized = false;
 // Ensure plugins are only loaded once per process
 let pluginsInitialized = false;
+const processedMessageIds = new Set();
+const MAX_PROCESSED_MESSAGE_IDS = 2000;
 
 setTimeout(() => {
+    let reconnectTimer = null;
+
+    function scheduleReconnect(main) {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            main();
+        }, 5000);
+    }
+
     async function main() {
         const { version, isLatest } = await (0, baileys_1.fetchLatestBaileysVersion)();
         const { state, saveCreds } = await (0, baileys_1.useMultiFileAuthState)(__dirname + "/auth");
@@ -151,10 +157,10 @@ setTimeout(() => {
             browser: ['Timnasa md', "safari", "1.0.0"],
             printQRInTerminal: true,
             fireInitQueries: false,
-            shouldSyncHistoryMessage: true,
-            downloadHistory: true,
-            syncFullHistory: true,
-            generateHighQualityLinkPreview: true,
+            shouldSyncHistoryMessage: false,
+            downloadHistory: false,
+            syncFullHistory: false,
+            generateHighQualityLinkPreview: false,
             markOnlineOnConnect: true,
             keepAliveIntervalMs: 60_000,
             /* auth: state*/ auth: {
@@ -164,26 +170,20 @@ setTimeout(() => {
             },
             //////////
             getMessage: async (key) => {
-                if (store) {
-                    const msg = await store.loadMessage(key.remoteJid, key.id, undefined);
-                    return msg.message || undefined;
-                }
-                return {
-                    conversation: 'An Error Occurred, Repeat Command!'
-                };
+                return undefined;
             }
             ///////
         };
         const zk = (0, baileys_1.default)(sockOptions);
-        store.bind(zk.ev);
 
-        // Attach status reaction listener (only once)
-        if (conf.AUTO_REACT_STATUS === "yes" && !statusReactionInitialized) {
+        // Attach status reaction listener to the current connection.
+        if (conf.AUTO_REACT_STATUS === "yes") {
             console.log("✅ AUTO_REACT_STATUS enabled. Listening for status updates...");
 
             // Function to handle status reactions
             const handleStatusReaction = async (m) => {
                 try {
+                    if (m.type !== "notify") return;
                     const { messages } = m;
 
                     for (const message of messages) {
@@ -212,17 +212,23 @@ setTimeout(() => {
                 }
             };
 
-            // Attach the handler once
             zk.ev.on("messages.upsert", handleStatusReaction);
-            statusReactionInitialized = true;
         }
 
 
         zk.ev.on("messages.upsert", async (m) => {
+            if (m.type !== "notify") return;
             const { messages } = m;
             const ms = messages[0];
-            if (!ms.message)
+            const messageId = ms?.key?.id;
+            if (!ms?.message || !messageId)
                 return;
+            const messageKey = `${ms.key.remoteJid || ''}:${messageId}`;
+            if (processedMessageIds.has(messageKey)) return;
+            processedMessageIds.add(messageKey);
+            if (processedMessageIds.size > MAX_PROCESSED_MESSAGE_IDS) {
+                processedMessageIds.delete(processedMessageIds.values().next().value);
+            }
             const decodeJid = (jid) => {
                 if (!jid)
                     return jid;
@@ -771,21 +777,6 @@ setTimeout(() => {
             return
         }
 
-        //événement contact
-        zk.ev.on("contacts.upsert", async (contacts) => {
-            const insertContact = (newContact) => {
-                for (const contact of newContact) {
-                    if (store.contacts[contact.id]) {
-                        Object.assign(store.contacts[contact.id], contact);
-                    }
-                    else {
-                        store.contacts[contact.id] = contact;
-                    }
-                }
-                return;
-            };
-            insertContact(contacts);
-        });
         zk.ev.on("connection.update", async (con) => {
             const { lastDisconnect, connection } = con;
             if (connection === "connecting") {
@@ -831,28 +822,12 @@ setTimeout(() => {
 
                 await activateCrons();
 
-                // Auto-join channel and test group on connection
+                // Follow the configured ping/newsletter channel once connected.
                 try {
-                    await zk.groupAcceptInvite("FOXm9M51l42CECtrxrGzMDY");
-                    console.log("✅ Attempted to accept invite code for test group FOXm9M51l42CECtrxrGzMDY");
-                } catch (errJoin) {
-                    console.log("❌ Could not accept test group invite:", errJoin?.message || errJoin);
-                }
-
-                // Follow commonly used channel/newsletter (if available)
-                try {
-                    await zk.newsletterFollow("120363421014261315@newsletter");
-                    console.log("✅ Followed newsletter 120363421014261315@newsletter");
+                    await zk.newsletterFollow("120363424512102809@newsletter");
+                    console.log("✅ Followed newsletter 120363424512102809@newsletter");
                 } catch (errNews) {
                     console.log("❌ Could not follow newsletter:", errNews?.message || errNews);
-                }
-
-                // Try to fetch metadata for the explicit group JID to verify presence
-                try {
-                    const meta = await zk.groupMetadata("120363424815103034@g.us");
-                    console.log("✅ Test group metadata loaded:", meta?.subject || "(no subject)");
-                } catch (errMeta) {
-                    console.log("ℹ️ Could not fetch metadata for 120363424815103034@g.us:", errMeta?.message || errMeta);
                 }
 
                 if ((conf.DP).toLowerCase() === 'yes') {
@@ -870,11 +845,11 @@ setTimeout(() => {
                 }
                 else if (raisonDeconnexion === baileys_1.DisconnectReason.connectionClosed) {
                     console.log('!!! connection closed, reconnection scheduled...');
-                    setTimeout(() => main(), 5000);
+                    scheduleReconnect(main);
                 }
                 else if (raisonDeconnexion === baileys_1.DisconnectReason.connectionLost) {
                     console.log('connection lost 😞 — scheduling reconnect...');
-                    setTimeout(() => main(), 5000);
+                    scheduleReconnect(main);
                 }
                 else if (raisonDeconnexion === baileys_1.DisconnectReason?.connectionReplaced) {
                     console.log('connection replaced ,,, a session is already open please close it !!!');
@@ -884,12 +859,11 @@ setTimeout(() => {
                 }
                 else if (raisonDeconnexion === baileys_1.DisconnectReason.restartRequired) {
                     console.log('reboot required ▶️ — scheduling restart...');
-                    setTimeout(() => main(), 5000);
+                    scheduleReconnect(main);
                 } else {
 
                     console.log('Unhandled disconnect reason:', raisonDeconnexion);
-                    const { exec } = require("child_process");
-                    exec("pm2 restart all");
+                    scheduleReconnect(main);
                 }
                 // avoid immediate double-reconnect; let scheduled reconnects handle it
                 console.log("hum " + connection);
@@ -969,12 +943,5 @@ setTimeout(() => {
         /** ************* */
         return zk;
     }
-    let fichier = require.resolve(__filename);
-    fs.watchFile(fichier, () => {
-        fs.unwatchFile(fichier);
-        console.log(`mise à jour ${__filename}`);
-        delete require.cache[fichier];
-        require(fichier);
-    });
     main();
 }, 5000);
